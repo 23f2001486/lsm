@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Battery Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body { font-family: Arial; background:#0f172a; color:white; padding:20px; }
+.card { background:#1e293b; padding:20px; margin:10px; border-radius:10px; display:inline-block; width:200px;}
+</style>
+</head>
+<body>
+
+<h1>Battery Dashboard</h1>
+
+<div class="card">SoH: <span id="soh">--</span>%</div>
+<div class="card">Cycles: <span id="cycles">--</span></div>
+<div class="card">Temperature: <span id="temp">--</span>°C</div>
+<div class="card">RUL: <span id="rul">--</span></div>
+<div class="card">Status: <span id="status">--</span></div>
+<div class="card">Updated: <span id="updated">--</span></div>
+
+<script>
+fetch("/dashboard_data")
+.then(res=>res.json())
+.then(data=>{
+document.getElementById("soh").innerText=data.soh;
+document.getElementById("cycles").innerText=data.cycles;
+document.getElementById("temp").innerText=data.temperature;
+document.getElementById("rul").innerText=data.rul;
+document.getElementById("status").innerText=data.status;
+document.getElementById("updated").innerText=data.last_updated;
+})
+</script>
+
+</body>
+</html>

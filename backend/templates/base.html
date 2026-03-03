@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>ABHONet-X Battery Intelligence</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+</head>
+
+<body class="bg-slate-900 text-white">
+
+<div class="flex">
+
+<!-- SIDEBAR -->
+<div class="w-64 bg-slate-800 min-h-screen p-4">
+
+<h1 class="text-xl font-bold mb-6">
+ABHONet-X
+</h1>
+
+<nav class="space-y-3">
+
+<a href="/dashboard" class="block hover:text-indigo-400">
+Dashboard
+</a>
+
+<a href="/monitoring" class="block hover:text-indigo-400">
+Battery Monitoring
+</a>
+
+<a href="/prediction" class="block hover:text-indigo-400">
+Prediction
+</a>
+
+<a href="/history" class="block hover:text-indigo-400">
+History
+</a>
+
+<a href="/analytics" class="block hover:text-indigo-400">
+Analytics
+</a>
+
+<a href="/alerts" class="block hover:text-indigo-400">
+Alerts
+</a>
+
+</nav>
+
+</div>
+
+<!-- CONTENT -->
+<div class="flex-1 p-6">
+
+{% block content %}
+
+{% endblock %}
+
+</div>
+
+</div>
+
+</body>
+</html>

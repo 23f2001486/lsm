@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h2 class="text-2xl font-bold mb-6">
+Battery Prediction
+</h2>
+
+<input id="cycle"
+type="number"
+placeholder="Enter Cycle"
+class="text-black p-2 rounded">
+
+<button onclick="predict()"
+class="bg-indigo-600 px-4 py-2 rounded ml-2">
+
+Predict
+
+</button>
+
+<p id="result" class="mt-4 text-xl"></p>
+
+<script src="/static/js/prediction.js"></script>
+
+{% endblock %}

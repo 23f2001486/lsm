@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h2 class="text-2xl font-bold mb-6">
+Battery History
+</h2>
+
+<table class="w-full bg-slate-800">
+
+<thead>
+
+<tr>
+<th>Date</th>
+<th>Cycle</th>
+<th>Voltage</th>
+<th>Temp</th>
+<th>SoH</th>
+</tr>
+
+</thead>
+
+<tbody id="historyTable">
+
+</tbody>
+
+</table>
+
+{% endblock %}
