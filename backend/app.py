@@ -5,16 +5,24 @@ import tensorflow as tf
 import joblib
 import pandas as pd
 import os
-from collections import deque # Added for industrial filtering
+from collections import deque
 
 app = Flask(__name__)
 CORS(app)
 
-# --- NEW: INDUSTRIAL SENSOR BUFFER ---
-# Stores the last 5 readings to filter noise, just like a real Tesla BMS
+# -----------------------------
+# SENSOR BUFFER (noise filter)
+# -----------------------------
 history_buffer = deque(maxlen=5)
 
-# --- ASSET LOADING ---
+# -----------------------------
+# SoH TREND BUFFER
+# -----------------------------
+soh_history = deque(maxlen=5)
+
+# -----------------------------
+# LOAD MODEL
+# -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "..", "model", "abh_model.keras")
 SCALER_PATH = os.path.join(BASE_DIR, "..", "model", "scaler.pkl")
@@ -22,132 +30,251 @@ SCALER_PATH = os.path.join(BASE_DIR, "..", "model", "scaler.pkl")
 try:
     model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     scaler = joblib.load(SCALER_PATH)
-    print(f"✅ ABHONet-X Neural Engine Online. Assets loaded from: {MODEL_PATH}")
+    print("ABHONet-X Neural Engine Online")
 except Exception as e:
-    print(f"❌ Critical Error: Assets not found! {e}")
+    print("Error loading assets:", e)
 
+# --------------------------------
+# MODEL INFERENCE FUNCTION
+# --------------------------------
 def get_model_output(c, t, v):
-    """Processes features and returns (SoH, SoC)"""
+
     try:
-        # Physics-Informed Feature Engineering
+
         arr_term = np.exp(-1 / (float(t) + 273.15))
         v_t_inter = float(v) * float(t)
-        
-        f_names = ["cycle", "temperature", "voltage", "arrhenius_term", "v_t_interaction"]
-        df = pd.DataFrame([[float(c), float(t), float(v), arr_term, v_t_inter]], columns=f_names)
-        
+
+        feature_names = [
+            "cycle",
+            "temperature",
+            "voltage",
+            "arrhenius_term",
+            "v_t_interaction"
+        ]
+
+        df = pd.DataFrame(
+            [[float(c), float(t), float(v), arr_term, v_t_inter]],
+            columns=feature_names
+        )
+
         scaled = scaler.transform(df)
+
         preds = model.predict(scaled, verbose=0)
-        
+
         soh = float(preds[0][0][0])
         soc = float(preds[1][0][0])
-        return np.clip(soh, 0, 100), np.clip(soc, 0, 100)
+
+        soh = np.clip(soh, 0, 100)
+        soc = np.clip(soc, 0, 100)
+
+        return soh, soc
+
     except Exception as e:
-        print(f"Inference Error: {e}")
+        print("Inference Error:", e)
         return None, None
 
-@app.route("/", methods=["GET"])
+
+# --------------------------------
+# RUL ESTIMATION FUNCTION
+# --------------------------------
+def estimate_rul(current_soh, history, failure_threshold=70):
+
+    if len(history) < 3:
+        return None
+
+    drops = []
+
+    for i in range(1, len(history)):
+        drop = history[i-1] - history[i]
+        drops.append(drop)
+
+    avg_drop = sum(drops) / len(drops)
+
+    if avg_drop <= 0:
+        return None
+
+    rul = (current_soh - failure_threshold) / avg_drop
+
+    return max(int(rul), 0)
+
+
+# --------------------------------
+# HOME PAGE
+# --------------------------------
+@app.route("/")
 def home():
     return render_template("index.html")
 
+
+# --------------------------------
+# PREDICTION API
+# --------------------------------
 @app.route("/predict", methods=["POST"])
 def predict():
+
     try:
+
         data = request.get_json()
+
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        # Input Parsing
-        c_raw = float(data.get('cycle', 0))
-        t_raw = float(data.get('temperature', 25))
-        v_raw = float(data.get('voltage', 3.7))
-        mode = data.get('mode', 'moderate')
+        # -----------------------
+        # INPUT DATA
+        # -----------------------
+        c_raw = float(data.get("cycle", 0))
+        t_raw = float(data.get("temperature", 25))
+        v_raw = float(data.get("voltage", 3.7))
+        mode = data.get("mode", "moderate")
 
-        # --- NEW: NOISE FILTERING LAYER ---
-        history_buffer.append({'c': c_raw, 't': t_raw, 'v': v_raw})
-        # Calculate moving average (Filtered Data)
-        c = sum(d['c'] for d in history_buffer) / len(history_buffer)
-        t = sum(d['t'] for d in history_buffer) / len(history_buffer)
-        v = sum(d['v'] for d in history_buffer) / len(history_buffer)
+        # -----------------------
+        # SENSOR NOISE FILTERING
+        # -----------------------
+        history_buffer.append({
+            "c": c_raw,
+            "t": t_raw,
+            "v": v_raw
+        })
 
-        # 1. Dual Diagnosis (Current State)
+        c = sum(d["c"] for d in history_buffer) / len(history_buffer)
+        t = sum(d["t"] for d in history_buffer) / len(history_buffer)
+        v = sum(d["v"] for d in history_buffer) / len(history_buffer)
+
+        # -----------------------
+        # CURRENT PREDICTION
+        # -----------------------
         soh, soc = get_model_output(c, t, v)
-        if soh is None: 
-            return jsonify({"error": "Prediction Failure"}), 500
 
-        # --- NEW: TREND DETECTION ---
+        if soh is None:
+            return jsonify({"error": "Prediction failed"}), 500
+
+        # -----------------------
+        # TREND DETECTION
+        # -----------------------
+        soh_history.append(soh)
+
         trend = "Stable"
-        if len(history_buffer) > 1:
-            # Check the health of the previous buffered reading
-            prev = history_buffer[-2]
-            p_soh, _ = get_model_output(prev['c'], prev['t'], prev['v'])
-            if p_soh and (p_soh - soh) > 0.3:
+
+        if len(soh_history) >= 3:
+
+            drops = []
+
+            for i in range(1, len(soh_history)):
+                drop = soh_history[i-1] - soh_history[i]
+                drops.append(drop)
+
+            avg_drop = sum(drops) / len(drops)
+
+            if avg_drop > 0.5:
                 trend = "Rapid Degradation"
 
-        # 2. X-AI Sensitivity Analysis (Stress Testing)
-        s_soh, _ = get_model_output(c, t + 10, v)
-        t_impact = abs(soh - s_soh)
-        v_impact = abs(v - 3.7) 
-        
-        # 3. Anomaly Pattern Detection
-        anomaly_score = (t_impact * 2.0) + (v_impact * 5.0)
-        level = "Critical" if anomaly_score > 4.0 else "Stable"
+        # -----------------------
+        # RUL PREDICTION
+        # -----------------------
+        rul_cycles = estimate_rul(soh, soh_history)
 
-        # 4. Non-Linear Projection (Future State)
-        added = {"slow": 100, "moderate": 300, "fast": 600}.get(mode, 300)
-        f_soh, _ = get_model_output(c + added, t, v)
+        # -----------------------
+        # STRESS TESTING
+        # -----------------------
+        stressed_soh, _ = get_model_output(c, t + 10, v)
 
-        # 5. Prescriptive Solution Engine
-        solutions = []
-        
-        # Add Trend Warning to solutions
+        thermal_impact = abs(soh - stressed_soh)
+        voltage_impact = abs(v - 3.7)
+
+        # -----------------------
+        # ANOMALY SCORE
+        # -----------------------
+        anomaly_score = (thermal_impact * 2.0) + (voltage_impact * 5.0)
+
+        anomaly_level = "Critical" if anomaly_score > 4 else "Stable"
+
+        # -----------------------
+        # FUTURE PROJECTION
+        # -----------------------
+        cycle_add = {
+            "slow": 100,
+            "moderate": 300,
+            "fast": 600
+        }.get(mode, 300)
+
+        future_soh, _ = get_model_output(c + cycle_add, t, v)
+
+        # -----------------------
+        # ADVICE GENERATION
+        # -----------------------
+        advice_list = []
+
         if trend == "Rapid Degradation":
-            solutions.append(" TREND: Health dropping fast. High discharge load detected.")
+            advice_list.append("Battery health dropping rapidly")
 
-        if level == "Critical":
-            solutions.append(" EMERGENCY: Immediate load reduction required.")
+        if anomaly_level == "Critical":
+            advice_list.append("Immediate load reduction recommended")
 
-        if t_impact * 10 > 5:
-            solutions.append(" THERMAL: Active cooling required. Check fan integrity.")
-        elif t > 45:
-            solutions.append(" TEMP: Ambient heat too high. Improve ventilation.")
+        if thermal_impact * 10 > 5:
+            advice_list.append("High thermal stress detected")
+
+        if t > 45:
+            advice_list.append("Temperature too high")
 
         if v > 4.1:
-            solutions.append(" VOLTAGE: Over-voltage stress. Lower charging ceiling.")
-        elif v < 3.2:
-            solutions.append(" DISCHARGE: Deep discharge risk. Recharge immediately.")
+            advice_list.append("Over-voltage stress")
 
-        if f_soh < 75:
-            solutions.append(" RETIREMENT: Capacity fade accelerating. Plan replacement.")
+        if v < 3.2:
+            advice_list.append("Deep discharge risk")
 
-        if not solutions:
-            solutions.append(" OPTIMAL: Continue current operating parameters.")
+        if future_soh < 75:
+            advice_list.append("Battery replacement planning recommended")
 
-        prescriptive_advice = " | ".join(solutions)
+        if not advice_list:
+            advice_list.append("Battery operating normally")
 
-        # 6. Comprehensive Response
+        advice = " | ".join(advice_list)
+
+        # -----------------------
+        # FINAL RESPONSE
+        # -----------------------
         return jsonify({
+
             "soh": round(soh, 2),
             "soc": round(soc, 2),
-            "status": "Excellent" if soh > 85 else "Nominal" if soh > 70 else "Warning",
-            "trend": trend, # Added for UI
-            "advice": prescriptive_advice,
-            "future_cycle": int(c + added),
-            "future_soh": round(f_soh, 2),
+
+            "status":
+                "Excellent" if soh > 85
+                else "Nominal" if soh > 70
+                else "Warning",
+
+            "trend": trend,
+
+            "rul_cycles": rul_cycles,
+
+            "future_cycle": int(c + cycle_add),
+
+            "future_soh": round(future_soh, 2),
+
+            "advice": advice,
+
             "anomaly": {
-                "score": round(anomaly_score, 4),
-                "level": level
+                "score": round(anomaly_score, 3),
+                "level": anomaly_level
             },
+
             "explain": {
-                "Thermal Stress": round(t_impact * 10, 1),
-                "Voltage Strain": round(v_impact * 20, 1),
+                "Thermal Stress": round(thermal_impact * 10, 2),
+                "Voltage Strain": round(voltage_impact * 20, 2),
                 "Cycle Aging": 1.5
             }
+
         })
 
     except Exception as e:
-        print(f"Backend Error: {e}")
+
+        print("Backend Error:", e)
+
         return jsonify({"error": str(e)}), 500
 
+
+# --------------------------------
+# RUN SERVER
+# --------------------------------
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
